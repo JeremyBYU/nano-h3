@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc, clang]
+        build_type: [Release, Debug]
+    steps:
+      - uses: actions/checkout@v4
+
+      # Every job otherwise builds uber/h3 from source, four times across the
+      # matrix, and that dominates the run.
+      - name: Cache FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-${{ matrix.compiler }}-${{ matrix.build_type }}-${{ hashFiles('cmake/dependencies.cmake') }}
+
+      - name: Configure
+        env:
+          CC: ${{ matrix.compiler == 'gcc' && 'gcc' || 'clang' }}
+          CXX: ${{ matrix.compiler == 'gcc' && 'g++' || 'clang++' }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+
+      - name: Build
+        run: cmake --build build -j
+
+      # Gate on doctest's own status line. Deliberately NOT on the assertion
+      # count: the divergence case adds 2 assertions per divergence, so a
+      # platform where cell_fast diverges once reports a different total while
+      # still passing.
+      - name: Test
+        run: ./build/tests/nanoh3-tests
+
+  # An explicit -std=c++17 job: target_compile_features(cxx_std_17) emits no
+  # -std flag at all when the compiler's default already satisfies it, so the
+  # matrix above does not actually prove the C++17 floor.
+  cxx17-floor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile the header standalone at -std=c++17 -pedantic-errors
+        run: |
+          printf '#include "nanoh3/nanoh3.hpp"\nint main(){return nanoh3::Grid<11>::cell(0.79,-2.14) == 0;}\n' > /tmp/floor.cpp
+          g++ -std=c++17 -pedantic-errors -Wall -Wextra -Iinclude /tmp/floor.cpp -o /tmp/floor
+          /tmp/floor

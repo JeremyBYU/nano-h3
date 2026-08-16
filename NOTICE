@@ -1,0 +1,85 @@
+nano-h3
+Copyright 2026 Jeremy Castagno
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+==========================================================================
+This product includes software developed at Uber Technologies, Inc.
+==========================================================================
+
+nano-h3 is a derivative work of H3 v4.1.0 (https://github.com/uber/h3),
+Copyright Uber Technologies, Inc., licensed under the Apache License,
+Version 2.0.
+
+The NOTICE file distributed with H3 v4.1.0 reads, in full:
+
+    Copyright 2017-2021 Uber Technologies, Inc.
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+    implied. See the License for the specific language governing
+    permissions and limitations under the License.
+
+--------------------------------------------------------------------------
+Which files derive from what
+--------------------------------------------------------------------------
+
+include/nanoh3/nanoh3.hpp
+
+  Roughly 70% of this file is a statement-order-preserving transcription of
+  H3 v4.1.0 C sources into C++, in several places preserving H3's own
+  comment wording and magic numbers. The upstream files are:
+
+    src/h3lib/lib/faceijk.c    Copyright 2016-2021 Uber Technologies, Inc.
+    src/h3lib/lib/coordijk.c   Copyright 2016-2018, 2020-2022
+                                                Uber Technologies, Inc.
+    src/h3lib/lib/h3Index.c    Copyright 2016-2021 Uber Technologies, Inc.
+    src/h3lib/lib/latLng.c     Copyright 2016-2021 Uber Technologies, Inc.
+    src/h3lib/lib/algos.c      Copyright 2016-2021 Uber Technologies, Inc.
+
+  Original to nano-h3: the Grid<Res> compile-time structure, the face
+  Cache and its argmin bound, the exact integer division replacing
+  lroundl((3i-j)/7.0L), and cell_fast (a vector gnomonic projection with
+  no counterpart upstream).
+
+include/nanoh3/nanoh3_tables.inl
+
+  Data tables derived from H3 v4.1.0:
+
+    src/h3lib/lib/faceijk.c    Copyright 2016-2021 Uber Technologies, Inc.
+    src/h3lib/lib/baseCells.c  Copyright 2016-2020 Uber Technologies, Inc.
+    src/h3lib/lib/algos.c      Copyright 2016-2021 Uber Technologies, Inc.
+
+  Eight tables are byte-identical to upstream. Five have upstream's
+  symbolic constants replaced by their integer values. Four do not exist
+  upstream as tables at all and are a struct-of-arrays decomposition of
+  upstream's baseCellData[]. The file's own header comment states this
+  per table.
+
+--------------------------------------------------------------------------
+Trademark
+--------------------------------------------------------------------------
+
+H3 is a project of Uber Technologies, Inc. nano-h3 is an independent
+derivative work and is not affiliated with, endorsed by, or supported by
+Uber Technologies, Inc. The Apache License, Version 2.0 grants no
+trademark rights (Section 6); the name is used descriptively to identify
+the upstream project this code derives from.
+
+--------------------------------------------------------------------------
+Test and benchmark dependencies
+--------------------------------------------------------------------------
+
+Fetched at configure time, only when nano-h3 is built as the top-level
+project. None is vendored here, and none is required to use the library.
+
+  H3                  Apache-2.0   github.com/uber/h3
+  doctest             MIT          github.com/doctest/doctest
+  nanobench           MIT          github.com/martinus/nanobench
