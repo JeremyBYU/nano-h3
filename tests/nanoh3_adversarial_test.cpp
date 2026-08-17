@@ -17,6 +17,10 @@
 //   degenerate     poles, antimeridian, signed zero, subnormals, and their
 //                  one-ulp neighbours
 //
+// Every entry point is a pure function of its arguments, so there is no state
+// to corrupt and nothing to check about call ORDER. That was not true while the
+// face cache existed, and two test cases here existed only to police it.
+//
 // The vertex case (equidistant from three cells) lives in nanoh3_test.cpp
 // because it is the one that found the bug and belongs next to the contract.
 #include <doctest/doctest.h>
@@ -102,10 +106,10 @@ void edge_midpoints(std::mt19937_64& rng, int cells) {
   }
 }
 
-// Points exactly between two adjacent face centres. The cache's whole argument
-// is that its bound guarantees the argmin, so a tie is where that argument is
-// under the most pressure: the same point is checked with the cache primed to
-// EACH of the two tied faces, and both must give H3's answer.
+// Points exactly between two adjacent face centres, where the 20-face argmin
+// has no unique winner and the result depends on iteration order and on which
+// comparison the strict < resolves first. H3 makes the same choice; this pins
+// that it keeps doing so.
 template <int Res>
 void face_ties() {
   for (int a = 0; a < 20; ++a) {
@@ -121,20 +125,6 @@ void face_ties() {
       const double lat = std::asin(z), lng = std::atan2(y, x);
 
       require_matches<Res>(lat, lng);
-
-      LatLng g{lat, lng};
-      H3Index want = 0;
-      if (latLngToCell(&g, Res, &want) != E_SUCCESS) continue;
-      for (const int primed : {a, b}) {
-        nanoh3::Cache cache;
-        cache.face = primed;
-        if (nanoh3::Grid<Res>::cell(lat, lng, &cache) != static_cast<std::uint64_t>(want)) {
-          CAPTURE(Res);
-          CAPTURE(primed);
-        }
-        REQUIRE(nanoh3::Grid<Res>::cell(lat, lng, &cache) ==
-                static_cast<std::uint64_t>(want));
-      }
     }
   }
 }
@@ -182,55 +172,12 @@ TEST_CASE("nanoh3: cell edge midpoints, every resolution") {
   all_res_edges(rng, std::make_index_sequence<16>{});
 }
 
-TEST_CASE("nanoh3: icosahedron face ties, with the cache primed to each face") {
+TEST_CASE("nanoh3: icosahedron face ties, every resolution") {
   all_res_ties(std::make_index_sequence<16>{});
 }
 
 TEST_CASE("nanoh3: poles, antimeridian, signed zero, subnormals") {
   all_res_degenerate(std::make_index_sequence<16>{});
-}
-
-// The cache is an optimisation, so its ONLY contract is that it never changes
-// an answer. Sequences here are built to make it wrong as often as possible:
-// every other point teleports to a pole or the antimeridian, so the cached face
-// is almost never the right one.
-TEST_CASE("nanoh3: a cache can never change the answer, however badly it misses") {
-  std::mt19937_64 rng(4242);
-  std::uniform_real_distribution<double> u(0.0, 1.0);
-  nanoh3::Cache c11, c7;
-  for (int n = 0; n < 40'000; ++n) {
-    double lat, lng;
-    switch (n % 5) {
-      case 0:  lat = std::asin(2.0 * u(rng) - 1.0); lng = (2.0 * u(rng) - 1.0) * M_PI; break;
-      case 1:  lat =  M_PI_2; lng = 0.0;   break;
-      case 2:  lat = -M_PI_2; lng = 0.0;   break;
-      case 3:  lat =  0.0;    lng =  M_PI; break;
-      default: lat =  0.0;    lng = -M_PI; break;
-    }
-    REQUIRE(nanoh3::Grid<11>::cell(lat, lng, &c11) == nanoh3::Grid<11>::cell(lat, lng));
-    REQUIRE(nanoh3::Grid<7>::cell(lat, lng, &c7) == nanoh3::Grid<7>::cell(lat, lng));
-  }
-}
-
-// A Cache holds a face index, which is resolution-independent, so sharing one
-// between different Grid<Res> instantiations is safe. That is worth pinning
-// down rather than leaving as a thing someone has to reason about.
-TEST_CASE("nanoh3: one cache shared across different resolutions") {
-  std::mt19937_64 rng(5);
-  std::uniform_real_distribution<double> u(0.0, 1.0);
-  nanoh3::Cache shared;
-  for (int n = 0; n < 20'000; ++n) {
-    const double lat = std::asin(2.0 * u(rng) - 1.0);
-    const double lng = (2.0 * u(rng) - 1.0) * M_PI;
-    LatLng g{lat, lng};
-    H3Index w11 = 0, w7 = 0, w0 = 0;
-    REQUIRE(latLngToCell(&g, 11, &w11) == E_SUCCESS);
-    REQUIRE(latLngToCell(&g, 7, &w7) == E_SUCCESS);
-    REQUIRE(latLngToCell(&g, 0, &w0) == E_SUCCESS);
-    REQUIRE(nanoh3::Grid<11>::cell(lat, lng, &shared) == (std::uint64_t)w11);
-    REQUIRE(nanoh3::Grid<7>::cell(lat, lng, &shared) == (std::uint64_t)w7);
-    REQUIRE(nanoh3::Grid<0>::cell(lat, lng, &shared) == (std::uint64_t)w0);
-  }
 }
 
 // Documents behaviour rather than asserting a contract, because there is no

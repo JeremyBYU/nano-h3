@@ -1,6 +1,6 @@
 // nanoh3 differential suite: the library's ONLY correctness authority is
 // equality with the real H3 latLngToCell, enforced here over uniform-sphere,
-// regional, boundary-adversarial, and cached-vs-uncached inputs, at an odd
+// regional, and boundary-adversarial inputs, at an odd
 // (Class III) and an even (Class II) resolution. Determinism: fixed seeds.
 #include <doctest/doctest.h>
 #include <h3api.h>
@@ -21,9 +21,9 @@ std::uint64_t h3_oracle(double lat, double lng, int res) {
 }
 
 template <int Res>
-void check_pt(double lat, double lng, nanoh3::Cache* c = nullptr) {
+void check_pt(double lat, double lng) {
   const auto want = h3_oracle(lat, lng, Res);
-  const auto got = nanoh3::Grid<Res>::cell(lat, lng, c);
+  const auto got = nanoh3::Grid<Res>::cell(lat, lng);
   if (got != want) {
     CAPTURE(lat);
     CAPTURE(lng);
@@ -33,21 +33,6 @@ void check_pt(double lat, double lng, nanoh3::Cache* c = nullptr) {
 }
 
 }  // namespace
-
-TEST_CASE("nanoh3: face-cache bound is provably safe") {
-  // Voronoi ball argument needs bound <= (min pairwise chord / 2)^2.
-  double min_sqd = 5.0;
-  for (int a = 0; a < 20; ++a) {
-    for (int b = a + 1; b < 20; ++b) {
-      const auto& u = nanoh3::kFaceCenterPoint[a];
-      const auto& v = nanoh3::kFaceCenterPoint[b];
-      const double d = (u.x - v.x) * (u.x - v.x) + (u.y - v.y) * (u.y - v.y) +
-                       (u.z - v.z) * (u.z - v.z);
-      if (d < min_sqd) min_sqd = d;
-    }
-  }
-  REQUIRE(0.126 < min_sqd / 4.0);  // kSameFaceBound < (min chord / 2)^2
-}
 
 TEST_CASE("nanoh3: uniform sphere, res 11 and res 10") {
   std::mt19937_64 rng(20260814);
@@ -60,15 +45,14 @@ TEST_CASE("nanoh3: uniform sphere, res 11 and res 10") {
   }
 }
 
-TEST_CASE("nanoh3: US region with warm cache (the matcher's regime)") {
+TEST_CASE("nanoh3: US region (the matcher's regime)") {
   std::mt19937_64 rng(20260814);
   std::uniform_real_distribution<double> lat_d(24.0, 49.0), lng_d(-125.0, -66.0);
-  nanoh3::Cache c11, c10;
   constexpr double kD2R = M_PI / 180.0;
   for (int n = 0; n < 2'000'000; ++n) {
     const double lat = lat_d(rng) * kD2R, lng = lng_d(rng) * kD2R;
-    check_pt<11>(lat, lng, &c11);
-    check_pt<10>(lat, lng, &c10);
+    check_pt<11>(lat, lng);
+    check_pt<10>(lat, lng);
   }
 }
 
@@ -79,11 +63,10 @@ TEST_CASE("nanoh3: trace-like random walks (locality + boundary crossings)") {
   constexpr double kD2R = M_PI / 180.0;
   for (int w = 0; w < 200; ++w) {
     double lat = lat0(rng), lng = lng0(rng);
-    nanoh3::Cache c;
     for (int n = 0; n < 5000; ++n) {
       lat += step(rng);
       lng += step(rng);
-      check_pt<11>(lat * kD2R, lng * kD2R, &c);
+      check_pt<11>(lat * kD2R, lng * kD2R);
     }
   }
 }
@@ -101,11 +84,10 @@ TEST_CASE("nanoh3: adversarial near-cell-boundary points") {
     const double b = br(rng);
     const double dlat = std::sin(b) * 0.01 / 111000.0;
     const double dlng = std::cos(b) * 0.01 / 111000.0;
-    nanoh3::Cache c;
     for (int n = 0; n < 6000; ++n) {
       lat += dlat;
       lng += dlng;
-      check_pt<11>(lat * kD2R, lng * kD2R, &c);
+      check_pt<11>(lat * kD2R, lng * kD2R);
     }
   }
 }
@@ -131,13 +113,12 @@ TEST_CASE("nanoh3: pentagon neighborhoods") {
 TEST_CASE("nanoh3: cell_deg replicates degsToRads bit-for-bit") {
   std::mt19937_64 rng(11);
   std::uniform_real_distribution<double> lat_d(24.0, 49.0), lng_d(-125.0, -66.0);
-  nanoh3::Cache c;
   for (int n = 0; n < 500'000; ++n) {
     const double lat = lat_d(rng), lng = lng_d(rng);
     LatLng g{degsToRads(lat), degsToRads(lng)};
     H3Index want = 0;
     REQUIRE(latLngToCell(&g, 11, &want) == E_SUCCESS);
-    REQUIRE(nanoh3::Grid<11>::cell_deg(lat, lng, &c) == want);
+    REQUIRE(nanoh3::Grid<11>::cell_deg(lat, lng) == want);
   }
 }
 
@@ -237,12 +218,11 @@ TEST_CASE("nanoh3: cell_fast divergence rate (opt-in path)") {
   std::uniform_real_distribution<double> u(0.0, 1.0);
   long diverged = 0;
   const long N = 2'000'000;
-  nanoh3::Cache c;
   for (long n = 0; n < N; ++n) {
     const double lat = std::asin(2.0 * u(rng) - 1.0);
     const double lng = (2.0 * u(rng) - 1.0) * M_PI;
     const auto want = h3_oracle(lat, lng, 11);
-    const auto got = nanoh3::Grid<11>::cell_fast(lat, lng, &c);
+    const auto got = nanoh3::Grid<11>::cell_fast(lat, lng);
     if (got != want) {
       ++diverged;
       // Any divergence must still be a NEIGHBOR of the true cell.
@@ -281,22 +261,19 @@ namespace {
 template <int Res>
 void sweep_one_res(std::mt19937_64& rng) {
   std::uniform_real_distribution<double> u(0.0, 1.0);
-  nanoh3::Cache cache;
 
   for (int n = 0; n < 12'000; ++n) {
     const double lat = std::asin(2.0 * u(rng) - 1.0);
     const double lng = (2.0 * u(rng) - 1.0) * M_PI;
     const auto want = h3_oracle(lat, lng, Res);
 
-    const auto got_cold = nanoh3::Grid<Res>::cell(lat, lng);
-    const auto got_warm = nanoh3::Grid<Res>::cell(lat, lng, &cache);
-    if (got_cold != want || got_warm != want) {
+    const auto got = nanoh3::Grid<Res>::cell(lat, lng);
+    if (got != want) {
       CAPTURE(lat);
       CAPTURE(lng);
       CAPTURE(Res);
     }
-    REQUIRE(got_cold == want);
-    REQUIRE(got_warm == want);  // the face cache can never change the answer
+    REQUIRE(got == want);
 
     LatLng want_c;
     REQUIRE(cellToLatLng(want, &want_c) == E_SUCCESS);

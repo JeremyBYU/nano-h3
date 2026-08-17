@@ -31,7 +31,6 @@
 //   from H3's faceijk.c, coordijk.c, h3Index.c, latLng.c and algos.c into one
 //   dependency-free C++17 header, then:
 //     - templated the resolution so res-dependent branches fold at compile time
-//     - added an argmin-guaranteed single-face cache ahead of the 20-face search
 //     - replaced _upAp7/_upAp7r's lroundl((3i-j)/7.0L) with exact integer
 //       round-half-away division
 //     - added cell_fast, a vector gnomonic projection with no H3 counterpart
@@ -48,12 +47,16 @@
 //
 //   1. FIXED RESOLUTION. The res-dependent branches and scale loop fold at
 //      compile time (Grid<11> for this project; any 0..15 works).
-//   2. SPATIAL LOCALITY. Consecutive points share an icosahedron face
-//      essentially always. A Cache carries the last face; a point inside the
-//      face's inscribed spherical cap (a precomputed chord-squared bound
-//      guaranteeing the argmin) skips the 20-face search entirely, and the
-//      fallback IS the full search — the fast path can never change the
-//      answer.
+//   2. SPATIAL LOCALITY, which the hardware exploits for free. Consecutive
+//      points share an icosahedron face essentially always, so the 20-face
+//      argmin, the hex2d rounding branch tree and the digit walk all take the
+//      same paths repeatedly: branch mispredictions fall from 6.9% to 1.2% and
+//      the trace regime runs 113 ns/cell faster than scattered global points.
+//      An explicit single-face cache USED to sit here. It was removed: it hit
+//      99.9999% of the time and was still worth between -1.1% and +2.8%,
+//      because twenty unrollable distance computations vectorise into almost
+//      nothing. Removing it also removed the library's only mutable state, so
+//      every entry point below is now a pure function.
 //
 // BIT-IDENTITY CONTRACT: Grid<R>::cell(), ::center() and ::ring1() return
 // exactly what H3 v4.1.0's latLngToCell(), cellToLatLng() and gridDisk(k=1)
@@ -84,7 +87,7 @@
 // Bump on any behavioural change. Consumers that pin a version can turn a
 // silently-swapped header into a compile error with a static_assert on these.
 #define NANOH3_VERSION_MAJOR 0
-#define NANOH3_VERSION_MINOR 1
+#define NANOH3_VERSION_MINOR 2
 #define NANOH3_VERSION_PATCH 0
 
 #include <cmath>
@@ -560,49 +563,36 @@ inline void h3_to_face_ijk(std::uint64_t h, int res, FaceIJK& f) {
 
 }  // namespace detail
 
-// Face cache: the argmin-guarantee bound is (half the minimum chord distance
-// between adjacent face centers)^2 — any point with squared chord distance
-// below it is provably closest to the cached face, so skipping the search
-// cannot change the result. Adjacent icosahedron centers are acos(1/sqrt(5))
-// apart; the bound is 2 - 2*cos(acos(1/sqrt(5))/2), squared chord form.
-struct Cache {
-  int face = -1;
-};
-
 template <int Res>
 class Grid {
   static_assert(Res >= 0 && Res <= 15, "H3 resolution");
 
  public:
   // lat/lng in RADIANS (like H3's internal LatLng).
-  static std::uint64_t cell(double lat, double lng, Cache* cache = nullptr) {
+  static std::uint64_t cell(double lat, double lng) {
     // ---- face + gnomonic hex2d (H3 _geoToHex2d, verbatim math) ----
     const double clat = cos(lat);
     const Vec3 p{cos(lng) * clat, sin(lng) * clat, sin(lat)};
 
-    int face = -1;
+    // Nearest of the 20 icosahedron face centres. This used to sit behind an
+    // opt-in single-face cache, on the theory that consecutive points in a
+    // track share a face and the search could be skipped. The theory was right
+    // and the optimisation was worthless: the cache hit 99.9999% of the time
+    // and bought between -1.1% and +2.8% depending on function and -O level.
+    // Twenty unrollable distance computations vectorise into almost nothing,
+    // and the branch predictor already exploits the locality the cache was
+    // built to exploit. Deleting it removed the library's only mutable state,
+    // which is why there is now nothing here to make thread-unsafe.
+    int face = 0;
     double sqd = 5.0;
-    if (cache && cache->face >= 0) {
-      const Vec3& c = kFaceCenterPoint[cache->face];
+    for (int f = 0; f < 20; ++f) {
+      const Vec3& c = kFaceCenterPoint[f];
       const double dx = c.x - p.x, dy = c.y - p.y, dz = c.z - p.z;
       const double d = dx * dx + dy * dy + dz * dz;
-      if (d < kSameFaceBound) {
-        face = cache->face;
+      if (d < sqd) {
+        face = f;
         sqd = d;
       }
-    }
-    if (face < 0) {
-      face = 0;
-      for (int f = 0; f < 20; ++f) {
-        const Vec3& c = kFaceCenterPoint[f];
-        const double dx = c.x - p.x, dy = c.y - p.y, dz = c.z - p.z;
-        const double d = dx * dx + dy * dy + dz * dz;
-        if (d < sqd) {
-          face = f;
-          sqd = d;
-        }
-      }
-      if (cache) cache->face = face;
     }
 
     double r = acos(1 - sqd / 2);
@@ -772,29 +762,20 @@ class Grid {
   // float-noise of a cell boundary (measured divergence rate in the test
   // suite; use only where a one-in-1e8 neighbor-cell assignment is
   // acceptable). The integer digit walk is shared with the exact path.
-  static std::uint64_t cell_fast(double lat, double lng, Cache* cache = nullptr) {
+  static std::uint64_t cell_fast(double lat, double lng) {
     const double clat = cos(lat);
     const Vec3 p{cos(lng) * clat, sin(lng) * clat, sin(lat)};
 
-    int face = -1;
-    if (cache && cache->face >= 0) {
-      const Vec3& c = kFaceCenterPoint[cache->face];
+    int face = 0;
+    double sqd = 5.0;
+    for (int f = 0; f < 20; ++f) {
+      const Vec3& c = kFaceCenterPoint[f];
       const double dx = c.x - p.x, dy = c.y - p.y, dz = c.z - p.z;
-      if (dx * dx + dy * dy + dz * dz < kSameFaceBound) face = cache->face;
-    }
-    if (face < 0) {
-      double sqd = 5.0;
-      face = 0;
-      for (int f = 0; f < 20; ++f) {
-        const Vec3& c = kFaceCenterPoint[f];
-        const double dx = c.x - p.x, dy = c.y - p.y, dz = c.z - p.z;
-        const double d = dx * dx + dy * dy + dz * dz;
-        if (d < sqd) {
-          face = f;
-          sqd = d;
-        }
+      const double d = dx * dx + dy * dy + dz * dz;
+      if (d < sqd) {
+        face = f;
+        sqd = d;
       }
-      if (cache) cache->face = face;
     }
 
     const FastAxes& ax = fast_axes();
@@ -812,10 +793,10 @@ class Grid {
 
   // Degree convenience (the matcher works in degrees). The long-double
   // constant and mixed multiply replicate H3's degsToRads bit-for-bit.
-  static std::uint64_t cell_deg(double lat_deg, double lng_deg, Cache* cache = nullptr) {
+  static std::uint64_t cell_deg(double lat_deg, double lng_deg) {
     constexpr long double kPi180 = 0.0174532925199432957692369076848861271111L;
     return cell(static_cast<double>(lat_deg * kPi180),
-                static_cast<double>(lng_deg * kPi180), cache);
+                static_cast<double>(lng_deg * kPi180));
   }
 
  private:
@@ -864,14 +845,6 @@ class Grid {
     }
   }
 
-  // Half the minimum chord distance between any two face centers, squared,
-  // with ~1% margin. Adjacent icosahedron face centers are arccos(sqrt(5)/3)
-  // = 0.7297 rad apart; chord^2 = 2 - 2*sqrt(5)/3 = 0.50929, min chord
-  // 0.71364, half 0.35682, squared 0.127322. The differential test recomputes
-  // the true minimum from kFaceCenterPoint and asserts this bound is below
-  // (half min)^2 — the Voronoi ball argument then guarantees the cached face
-  // is the argmin whenever the fast path takes it.
-  static constexpr double kSameFaceBound = 0.126;
 };
 
 }  // namespace nanoh3

@@ -3,7 +3,7 @@
 # two-argument form, and every option below silently defaults OFF -- a standalone
 # build would configure cleanly and build zero tests.
 cmake_minimum_required(VERSION 3.21)
-project(nano-h3 VERSION 0.1.0 LANGUAGES CXX)
+project(nano-h3 VERSION 0.2.0 LANGUAGES CXX)
 
 add_library(nano-h3 INTERFACE)
 add_library(nano-h3::nano-h3 ALIAS nano-h3)

@@ -14,9 +14,8 @@ library has three functions.
 ```cpp
 #include "nanoh3/nanoh3.hpp"
 
-nanoh3::Cache cache;                                  // optional; see Speed. nullptr is fine
-auto cell = nanoh3::Grid<11>::cell_deg(45.52, -122.68, &cache);
-auto same = nanoh3::Grid<11>::cell(0.7945, -2.1412, &cache);   // radians
+auto cell = nanoh3::Grid<11>::cell_deg(45.52, -122.68);
+auto same = nanoh3::Grid<11>::cell(0.7945, -2.1412);           // radians
 
 double lat, lng;
 nanoh3::Grid<11>::center(cell, lat, lng);             // == cellToLatLng
@@ -36,37 +35,34 @@ of 3 runs. One op is one conversion over 65,536 precomputed points.
 
 | | ns/op | vs H3 |
 |---|---:|---:|
-| `latLngToCell`, scattered points | 806.6 | 1.00x |
-| `Grid<11>::cell`, scattered globally | 386.2 | **2.09x** |
-| `Grid<11>::cell`, scattered on one face | 325.7 | |
-| `latLngToCell`, GPS trace | 613.1 | 1.00x |
-| `Grid<11>::cell`, trace | 272.7 | **2.25x** |
-| `Grid<11>::cell_fast`, trace | 150.7 | **4.07x** |
+| `latLngToCell`, scattered points | 808.6 | 1.00x |
+| `Grid<11>::cell`, scattered globally | 387.5 | **2.09x** |
+| `Grid<11>::cell`, scattered on one face | 323.1 | |
+| `latLngToCell`, GPS trace | 619.0 | 1.00x |
+| `Grid<11>::cell`, trace | 273.9 | **2.26x** |
+| `Grid<11>::cell_fast`, trace | 150.1 | **4.12x** |
 
 **Fixed resolution** is the mechanism that always pays. `Grid<Res>` is a
 template, so the resolution-dependent branches and the scale loop fold at
 compile time, and the integer digit walk replaces H3's `long double` rounding
 with exact integer arithmetic. That is the whole of the scattered-points gain.
 
-**Spatial locality** is worth another 113 ns on top, and it is worth being
-precise about why, because the obvious explanation is wrong. Confining scattered
+**Spatial locality** is worth another 113 ns on top, and the reason is worth
+stating precisely because the obvious explanation is wrong. Confining scattered
 points to a single icosahedron face saves 60 ns; making them sequential saves 53
-ns more. Branch mispredictions fall from 6.86% to 1.19%. So the locality gain is
-real, and it is delivered by the CPU's branch predictor and warm lookup tables.
+ns more. Branch mispredictions fall from 6.86% to 1.19%. The gain is real and it
+is delivered by the CPU's branch predictor and warm lookup tables, for free.
 
-It is **not** delivered by `Cache`. Measured on this machine, passing a cache is
-worth between −1.1% and +2.8% depending on function and optimisation level, and
-it only reaches +2.8% at `-O0`. The cache hits 99.9999% of the time on trace
-input, so it works exactly as designed; the 20-face search it skips is 20
-unrollable distance computations that the compiler vectorises into almost
-nothing. The hardware was already exploiting the locality the cache was built to
-exploit.
+There used to be an explicit single-face cache here, on the theory that a track
+stays on one face so the 20-face search could be skipped. The theory was correct
+and the optimisation was worthless. The cache hit 99.9999% of the time and was
+still worth between −1.1% and +2.8% depending on function and optimisation level,
+because twenty unrollable distance computations vectorise into almost nothing.
+The hardware was already exploiting the locality the cache was built to exploit.
 
-`Cache` is therefore optional in the strongest sense: passing `nullptr` costs
-nothing measurable, and the design guarantees it cannot change an answer anyway.
-The fast path falls back to the full search, the bound is half the minimum chord
-distance between face centres squared so a Voronoi argument makes the cached face
-provably the nearest, and a test recomputes that minimum from the face table.
+It was deleted in 0.2.0. Removing it removed the library's only mutable state,
+so every entry point is now a pure function of its arguments, and the entire
+question of thread safety disappeared with it.
 
 Run-to-run spread on this machine is about 10% even for identical code. Treat
 smaller differences as noise.
@@ -89,13 +85,11 @@ and Debug. Windows is not supported: `M_PI` needs `_USE_MATH_DEFINES` under
 MSVC in three places and nothing has been tested there. arm64 macOS is
 untested.
 
-**Threads.** `Cache` is one `int` and carries no synchronization. Give each
-thread its own, or pass `nullptr`, which is always correct and always does the
-full face search. Verified rather than assumed: 16 threads with private caches
-run clean under ThreadSanitizer, including a spin barrier that forces every
-thread's first `cell_fast` call to race on the lazily initialised per-face axis
-table. Sharing one `Cache` between threads is a genuine data race, and TSan
-reports it on the `cache->face` accesses if you try.
+**Threads.** Nothing to say, which is the point. Every entry point is a pure
+function of its arguments. There is no shared mutable state, no per-thread setup,
+nothing to own. The one internal static is a read-only per-face table
+initialised on first use, and 16 threads released from a spin barrier to race
+that initialisation run clean under ThreadSanitizer.
 
 **Input validation: there is none.** H3 rejects non-finite or out-of-range
 coordinates with `E_LATLNG_DOMAIN`. `cell()` returns a `uint64_t` and has no
@@ -156,7 +150,7 @@ integer, for every reachable input.
 
 The floating-point front end is tested. It replicates H3's operation sequence
 and its mixed double/long-double precision statement by statement, and a
-differential suite enforces equality against real H3 over 89,319,355 assertions.
+differential suite enforces equality against real H3 over 88,926,394 assertions.
 Two kinds of input go into that number, and the second kind matters more than
 the first.
 
@@ -174,8 +168,7 @@ Constructed, to attack specific mechanisms, at every resolution:
   boundaries.
 - **cell edge midpoints**, equidistant from two.
 - **icosahedron face ties**, equidistant from two face centres, where the
-  20-face search has no unique winner, each checked with the face cache primed
-  to both of the tied faces.
+  20-face search has no unique winner and the answer depends on iteration order.
 - **poles, the antimeridian, signed zero and subnormals**, with their one-ulp
   neighbours.
 - **exhaustive enumeration** of all 2,352,972 cells at resolutions 0 to 5, which
@@ -227,7 +220,7 @@ works too, after `cmake --install`. CMake 3.21 or newer is required, for
 To make a mismatched header a compile error rather than a wrong answer:
 
 ```cpp
-static_assert(NANOH3_VERSION_MAJOR == 0 && NANOH3_VERSION_MINOR == 1 &&
+static_assert(NANOH3_VERSION_MAJOR == 0 && NANOH3_VERSION_MINOR == 2 &&
                   NANOH3_VERSION_PATCH == 0,
               "nanoh3 version mismatch: the compiled header is not the pinned one");
 ```

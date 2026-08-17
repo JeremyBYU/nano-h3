@@ -1,18 +1,16 @@
-// Concurrency. The library documents "give each thread its own Cache"; this
-// checks that claim instead of asserting it.
+// Concurrency. Since the face cache was removed there is exactly ONE piece of
+// shared mutable state left in the library: the function-local static inside
+// fast_axes(), initialised on first use and read-only thereafter.
 //
-// There are exactly two pieces of shared mutable state:
+// C++11 guarantees that initialisation is thread-safe. "Guaranteed by the
+// standard" and "true in this build" are different claims, so every thread is
+// released from a spin barrier to make its first cell_fast() call as close to
+// simultaneous as possible, which is the only moment that static is ever
+// written.
 //
-//   1. Cache, which the caller owns. Per-thread is safe. Sharing one is a real
-//      data race, and TSan reports it on nanoh3.hpp's cache->face accesses if
-//      you try. That is not simulated here, because a test suite should not
-//      contain a deliberate race; see the comment at the bottom for how to
-//      reproduce it.
-//   2. the function-local static inside fast_axes(), initialised on first use.
-//      C++11 guarantees that initialisation is thread-safe, but "guaranteed by
-//      the standard" and "true in this build" are different claims, so every
-//      thread is released from a spin barrier to make its first cell_fast()
-//      call as close to simultaneous as possible.
+// Everything else is a pure function of its arguments, which is the whole
+// reason this file is short. It used to also police per-thread cache ownership;
+// deleting the cache deleted that obligation.
 //
 // No H3 function is called inside a thread. Expected values are precomputed
 // single-threaded, so under TSan any report is unambiguously about this
@@ -40,7 +38,7 @@ struct Expected {
 
 }  // namespace
 
-TEST_CASE("nanoh3: 16 threads, private caches, simultaneous lazy-static init") {
+TEST_CASE("nanoh3: 16 threads, pure entry points, simultaneous lazy-static init") {
   const unsigned kThreads = 16;
   const int kPoints = 20'000;
 
@@ -78,19 +76,16 @@ TEST_CASE("nanoh3: 16 threads, private caches, simultaneous lazy-static init") {
     while (!go.load(std::memory_order_acquire)) { /* spin */ }
 
     // First touch of fast_axes()'s static, as simultaneous as we can arrange.
-    nanoh3::Cache fast_cache;
     for (int i = 0; i < 256; ++i) {
       const auto& e = ex[static_cast<std::size_t>(i) % ex.size()];
-      nanoh3::Grid<11>::cell_fast(e.lat, e.lng, &fast_cache);
+      nanoh3::Grid<11>::cell_fast(e.lat, e.lng);
     }
 
-    nanoh3::Cache mine;  // private, as documented
     long bad = 0;
     for (std::size_t n = 0; n < ex.size(); ++n) {
       const Expected& e = ex[(n + id * 997) % ex.size()];  // decorrelate threads
-      if (nanoh3::Grid<11>::cell(e.lat, e.lng, &mine) != e.c11) ++bad;
       if (nanoh3::Grid<11>::cell(e.lat, e.lng) != e.c11) ++bad;
-      if (nanoh3::Grid<7>::cell(e.lat, e.lng, &mine) != e.c7) ++bad;
+      if (nanoh3::Grid<7>::cell(e.lat, e.lng) != e.c7) ++bad;
       double lat = 0, lng = 0;
       nanoh3::Grid<11>::center(e.c11, lat, lng);
       if (lat != e.clat || lng != e.clng) ++bad;
@@ -113,7 +108,8 @@ TEST_CASE("nanoh3: 16 threads, private caches, simultaneous lazy-static init") {
   REQUIRE(mismatches.load() == 0);
 }
 
-// To confirm TSan is actually watching this file rather than silently inert,
-// make `mine` above static and rebuild with -fsanitize=thread. It reports a
-// data race on nanoh3.hpp's cache->face read and write. That was verified when
-// this test was written: 4 reports with a shared cache, 0 with private caches.
+// TSan was confirmed non-vacuous on this harness while the face cache still
+// existed: making the per-thread Cache static produced 4 data-race reports on
+// nanoh3.hpp's cache->face accesses, against 0 with private caches. With the
+// cache gone there is no longer any way to provoke a race from the public API,
+// which is the point.
