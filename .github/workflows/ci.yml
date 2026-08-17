@@ -1,8 +1,10 @@
 name: ci
 
 on:
+  # Every branch, not just main. A topic branch that CI ignores is a topic
+  # branch whose sanitizer and floor jobs nobody has actually run.
   push:
-    branches: [main]
+    branches: ['**']
   pull_request:
   workflow_dispatch:
 
