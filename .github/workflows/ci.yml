@@ -53,3 +53,38 @@ jobs:
           printf '#include "nanoh3/nanoh3.hpp"\nint main(){return nanoh3::Grid<11>::cell(0.79,-2.14) == 0;}\n' > /tmp/floor.cpp
           g++ -std=c++17 -pedantic-errors -Wall -Wextra -Iinclude /tmp/floor.cpp -o /tmp/floor
           /tmp/floor
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Two separate jobs: ASan and TSan cannot be combined, and UBSan's
+          # float-cast-overflow is NOT part of -fsanitize=undefined in GCC, so
+          # it has to be named explicitly or the float->int casts go unchecked.
+          - name: asan-ubsan
+            flags: "-fsanitize=address,undefined,float-cast-overflow,float-divide-by-zero -fno-omit-frame-pointer"
+            filter: "-tc-exclude=*uniform sphere*,*US region*,*divergence*"
+          - name: tsan
+            flags: "-fsanitize=thread"
+            filter: "-tc=*threads*"
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Cache FetchContent deps
+        uses: actions/cache@v4
+        with:
+          path: build/_deps
+          key: deps-san-${{ hashFiles('cmake/dependencies.cmake') }}
+      - name: Configure and build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_CXX_FLAGS="-O1 -g ${{ matrix.flags }}" \
+            -DCMAKE_EXE_LINKER_FLAGS="${{ matrix.flags }}"
+          cmake --build build -j --target nanoh3-tests
+      - name: Run
+        # setarch -R disables ASLR. Without it TSan aborts on newer kernels with
+        # "unexpected memory mapping", which is an environment problem and not a
+        # finding. Harmless for the ASan job.
+        run: setarch "$(uname -m)" -R ./build/tests/nanoh3-tests ${{ matrix.filter }}

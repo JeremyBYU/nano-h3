@@ -10,6 +10,9 @@ include(FetchContent)
 # feature table for the test target to resolve against.
 enable_language(C)
 
+# The thread test needs it; the library itself does not.
+find_package(Threads REQUIRED)
+
 # H3 is the test oracle, not a dependency of the library. Same pin the header
 # was transcribed from; changing it invalidates the bit-identity contract.
 FetchContent_Declare(

@@ -66,9 +66,12 @@ Read this before adopting. It converts a point to a cell at one resolution,
 returns a cell's centre, and returns a cell's six neighbours. Everything else
 H3 does is out of scope.
 
-**Resolutions.** All 16, from 0 to 15, are checked against H3 for `cell`,
-`center` and `ring1`. Resolutions 10 and 11 additionally carry the deep
-adversarial cases, because those are what the original workload used.
+**Resolutions.** All 16, from 0 to 15. For resolutions 0 through 5 the
+coverage is exhaustive rather than sampled: every one of the 2,352,972 cells
+that exist at those resolutions is checked for `center`, `ring1` and the
+centre-to-cell round trip. Above res 5 the space grows sevenfold per level, so
+coverage there is sampled and adversarial. Resolutions 10 and 11 additionally
+carry the deepest cases, because those are what the original workload used.
 
 **Platforms.** Linux and macOS x86-64, gcc and clang, tested in CI on Release
 and Debug. Windows is not supported: `M_PI` needs `_USE_MATH_DEFINES` under
@@ -77,13 +80,36 @@ untested.
 
 **Threads.** `Cache` is one `int` and carries no synchronization. Give each
 thread its own, or pass `nullptr`, which is always correct and always does the
-full face search.
+full face search. Verified rather than assumed: 16 threads with private caches
+run clean under ThreadSanitizer, including a spin barrier that forces every
+thread's first `cell_fast` call to race on the lazily initialised per-face axis
+table. Sharing one `Cache` between threads is a genuine data race, and TSan
+reports it on the `cache->face` accesses if you try.
 
-**Pentagons.** Twelve cells per resolution have five neighbours rather than
-six, so `ring1` fills six of its seven slots and zeroes the rest. The empty
-slot is not at a fixed index. This matches H3 exactly, hole position included,
-which is the point: `ring1` reproduces `gridDisk`'s output slot for slot rather
-than tidying it up.
+**Input validation: there is none.** H3 rejects non-finite or out-of-range
+coordinates with `E_LATLNG_DOMAIN`. `cell()` returns a `uint64_t` and has no
+error channel, so for NaN, infinity, or a latitude outside +/-pi/2 it returns a
+cell index that is **structurally valid and completely meaningless**. There is
+no sentinel to check. Measured over NaN, +/-inf, 1e308 and 300,000 random bit
+patterns: no crash and no undefined behaviour, under ASan and under UBSan with
+`float-cast-overflow` enabled, but every out-of-domain input produced a
+plausible-looking wrong answer. Validate your own coordinates.
+
+**`ring1` output layout.** Do not assume a layout. `ring1` reproduces
+`gridDisk`'s output slot for slot rather than tidying it up, and `gridDisk` has
+two paths. On the fast path you get seven cells with the origin at slot 0. Near
+a pentagon it falls back to a hash set keyed by `origin % 7`, and then:
+
+- the origin can be at **any** slot, not slot 0;
+- a pentagon has five neighbours, so one slot is 0, and that empty slot can also
+  be at any index.
+
+Measured at resolution 2: 61 cells place the origin somewhere other than slot 0,
+and only 10 of those are pentagons themselves. The other 51 are ordinary
+hexagons in a pentagon's distortion area. So code that reads `out[0]` as the
+origin, or skips index 0 to iterate "just the neighbours", is wrong for those
+cells. Iterate all seven slots, skip zeros, and compare against your origin
+explicitly. H3 behaves identically; this is faithfulness, not a quirk.
 
 **Floating-point flags.** Bit-identity means reproducing H3's arithmetic
 exactly, so flags that licence the compiler to rewrite that arithmetic break
@@ -91,11 +117,11 @@ it. Measured on the full suite:
 
 | Flags | Result |
 |---|---|
-| `-O3` | all 15 cases pass |
-| `-O3 -march=native` | 3 cases fail |
-| `-O3 -march=native -ffp-contract=off` | all 15 cases pass |
-| `-O3 -ffast-math` | 3 cases fail |
-| `-O3 -mlong-double-64` | 3 cases fail |
+| `-O3` | all 24 cases pass |
+| `-O3 -march=native` | 7 cases fail |
+| `-O3 -march=native -ffp-contract=off` | all 24 cases pass |
+| `-O3 -ffast-math` | 7 cases fail |
+| `-O3 -mlong-double-64` | 7 cases fail |
 
 If you use `-march=native`, add `-ffp-contract=off`. The only culprit there is
 FMA contraction, and turning it off costs nothing measurable.
@@ -119,13 +145,34 @@ integer, for every reachable input.
 
 The floating-point front end is tested. It replicates H3's operation sequence
 and its mixed double/long-double precision statement by statement, and a
-differential suite enforces equality against real H3 over 41,893,661
-assertions: uniform-sphere points, a regional distribution, 200 random walks at
-15 m steps, an adversarial 1 cm march across cell boundaries, dense sampling
-around all 12 pentagons, every base cell on a 0.5 degree global grid, the poles
-and antimeridian, and every vertex of 24,000 cell boundaries across all 16
-resolutions. No proof covers every representable double, so that is where the
-claim stops.
+differential suite enforces equality against real H3 over 89,319,355 assertions.
+Two kinds of input go into that number, and the second kind matters more than
+the first.
+
+Sampled, to cover volume: uniform-sphere points, a regional distribution, 200
+random walks at 15 m steps, dense sampling around all 12 pentagons, and every
+base cell on a 0.5 degree global grid.
+
+Constructed, to attack specific mechanisms, at every resolution:
+
+- **cell boundaries found by bisection.** Halve toward the boundary between two
+  cells until the endpoints are adjacent doubles, then probe both sides and the
+  surrounding ulp grid. Unlike a fixed-step march this finds the exact decision
+  boundary anywhere, not only at geometrically special points.
+- **cell vertices**, equidistant from three cells: every vertex of 24,000 cell
+  boundaries.
+- **cell edge midpoints**, equidistant from two.
+- **icosahedron face ties**, equidistant from two face centres, where the
+  20-face search has no unique winner, each checked with the face cache primed
+  to both of the tied faces.
+- **poles, the antimeridian, signed zero and subnormals**, with their one-ulp
+  neighbours.
+- **exhaustive enumeration** of all 2,352,972 cells at resolutions 0 to 5, which
+  is a complete proof for `center` and `ring1` at those resolutions rather than
+  evidence about them.
+
+No proof covers every representable double for the coordinate front end, so that
+is where the claim stops.
 
 That last input class earns its place, and it is the one most libraries skip.
 Cell vertices are equidistant from three cells, which makes them the sharpest
@@ -179,7 +226,7 @@ Building the tests:
 ```
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
-./build/tests/nanoh3-tests          # ~20 s
+./build/tests/nanoh3-tests          # ~24 s
 ./build/benchmarks/bench-nanoh3
 ```
 
