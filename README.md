@@ -14,7 +14,7 @@ library has three functions.
 ```cpp
 #include "nanoh3/nanoh3.hpp"
 
-nanoh3::Cache cache;                                  // optional, holds the last face
+nanoh3::Cache cache;                                  // optional; see Speed. nullptr is fine
 auto cell = nanoh3::Grid<11>::cell_deg(45.52, -122.68, &cache);
 auto same = nanoh3::Grid<11>::cell(0.7945, -2.1412, &cache);   // radians
 
@@ -36,26 +36,37 @@ of 3 runs. One op is one conversion over 65,536 precomputed points.
 
 | | ns/op | vs H3 |
 |---|---:|---:|
-| `latLngToCell`, scattered points | 804.2 | 1.00x |
-| `Grid<11>::cell`, scattered, cache | 386.1 | **2.08x** |
-| `latLngToCell`, GPS trace | 551.3 | 1.00x |
-| `Grid<11>::cell`, trace, cache | 244.8 | **2.25x** |
-| `Grid<11>::cell_fast`, trace, cache | 134.2 | **4.11x** |
+| `latLngToCell`, scattered points | 806.6 | 1.00x |
+| `Grid<11>::cell`, scattered globally | 386.2 | **2.09x** |
+| `Grid<11>::cell`, scattered on one face | 325.7 | |
+| `latLngToCell`, GPS trace | 613.1 | 1.00x |
+| `Grid<11>::cell`, trace | 272.7 | **2.25x** |
+| `Grid<11>::cell_fast`, trace | 150.7 | **4.07x** |
 
-Two mechanisms produce those two rows.
+**Fixed resolution** is the mechanism that always pays. `Grid<Res>` is a
+template, so the resolution-dependent branches and the scale loop fold at
+compile time, and the integer digit walk replaces H3's `long double` rounding
+with exact integer arithmetic. That is the whole of the scattered-points gain.
 
-Scattered points win on **fixed resolution** alone. `Grid<Res>` is a template,
-so the resolution-dependent branches and the scale loop fold at compile time.
-The face cache almost never helps here, and the integer digit walk is the whole
-gain.
+**Spatial locality** is worth another 113 ns on top, and it is worth being
+precise about why, because the obvious explanation is wrong. Confining scattered
+points to a single icosahedron face saves 60 ns; making them sequential saves 53
+ns more. Branch mispredictions fall from 6.86% to 1.19%. So the locality gain is
+real, and it is delivered by the CPU's branch predictor and warm lookup tables.
 
-The trace row adds **spatial locality**. Consecutive points in a track share an
-icosahedron face essentially always, so `Cache` holds the last face and a point
-inside that face's inscribed spherical cap skips the 20-face search. The bound
-is half the minimum chord distance between face centres, squared, so a Voronoi
-argument guarantees the cached face really is the nearest one. The fallback is
-the full search, so the fast path cannot change the answer, and a test
-recomputes the true minimum from the face table to confirm the bound.
+It is **not** delivered by `Cache`. Measured on this machine, passing a cache is
+worth between −1.1% and +2.8% depending on function and optimisation level, and
+it only reaches +2.8% at `-O0`. The cache hits 99.9999% of the time on trace
+input, so it works exactly as designed; the 20-face search it skips is 20
+unrollable distance computations that the compiler vectorises into almost
+nothing. The hardware was already exploiting the locality the cache was built to
+exploit.
+
+`Cache` is therefore optional in the strongest sense: passing `nullptr` costs
+nothing measurable, and the design guarantees it cannot change an answer anyway.
+The fast path falls back to the full search, the bound is half the minimum chord
+distance between face centres squared so a Voronoi argument makes the cached face
+provably the nearest, and a test recomputes that minimum from the face table.
 
 Run-to-run spread on this machine is about 10% even for identical code. Treat
 smaller differences as noise.
