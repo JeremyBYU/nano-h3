@@ -31,22 +31,26 @@ about threads.
 ## Speed
 
 AMD Ryzen Threadripper 7960X, gcc 13.3.0, `-O3`, governor `performance`,
-median of 3 runs. One op is one conversion over 65,536 precomputed points.
+CPU-pinned, median of 3 runs of `bench-nanoh3`. One op is one conversion
+over 65,536 precomputed points.
 
 | | ns/op | vs H3 |
 |---|---:|---:|
-| `latLngToCell`, scattered points | 808.6 | 1.00x |
-| `Grid<11>::cell`, scattered | 387.5 | **2.09x** |
-| `latLngToCell`, GPS trace | 619.0 | 1.00x |
-| `Grid<11>::cell`, trace | 273.9 | **2.26x** |
-| `Grid<11>::cell_fast`, trace | 150.1 | **4.12x** |
+| `latLngToCell`, scattered points | 811.5 | 1.00x |
+| `Grid<11>::cell`, scattered | 298.5 | **2.72x** |
+| `latLngToCell`, GPS trace | 613.9 | 1.00x |
+| `Grid<11>::cell`, trace | 260.7 | **2.35x** |
+| `Grid<11>::cell_fast`, trace | 134.5 | **4.56x** |
+| `Grid<11>::cell_fast`, scattered | 151.5 | **5.36x** |
 
 The gain comes from the fixed resolution: `Grid<Res>` is a template, so the
-resolution-dependent branches and the scale loop fold at compile time, and an
-integer digit walk replaces H3's `long double` rounding with exact integer
-arithmetic. A trace is faster than scattered points because the CPU's branch
-predictor and warm tables reward locality on their own; the library does
-nothing for it. Run-to-run spread on this machine is about 10%.
+resolution-dependent branches fold and the scale loop can unroll at compile
+time. An integer digit walk replaces H3's `long double` rounding with exact
+integer arithmetic, carries two coordinates instead of repeatedly normalizing
+three, and encodes directions directly. A trace is faster than scattered
+points because the CPU's branch predictor and warm tables reward locality on
+their own; the library does nothing for it. Timings vary with compiler, CPU
+flags, and machine load.
 
 `cell_fast()` trades exactness for a vector gnomonic projection. A point
 within nanometres of a boundary can land in the immediate neighbour of the
