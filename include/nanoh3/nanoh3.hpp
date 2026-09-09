@@ -33,6 +33,8 @@
 //     - templated the resolution so res-dependent branches fold at compile time
 //     - replaced _upAp7/_upAp7r's lroundl((3i-j)/7.0L) with exact integer
 //       round-half-away division
+//     - reduced normalization to a common translation, encoded unit directions
+//       directly, carried the digit walk in IJ, and composed hexagon rotations
 //     - added cell_fast, a vector gnomonic projection with no H3 counterpart
 //       (NOT bit-identical to H3)
 //
@@ -50,8 +52,8 @@
 //   2. SPATIAL LOCALITY, which the hardware exploits for free. Consecutive
 //      points share an icosahedron face essentially always, so the 20-face
 //      argmin, the hex2d rounding branch tree and the digit walk all take the
-//      same paths repeatedly: branch mispredictions fall from 6.9% to 1.2% and
-//      the trace regime runs 113 ns/cell faster than scattered global points.
+//      similar paths repeatedly. The integer walk now has fewer unpredictable
+//      branches, reducing the gap between trace and scattered workloads.
 //      The library keeps no state to help that along: every entry point below
 //      is a pure function of its arguments.
 //
@@ -69,7 +71,7 @@
 //   The floating-point front end (face search, gnomonic projection, hex2d
 //   cube-round) is TESTED, not proven. It replicates H3's operation sequence
 //   and precision statement by statement, and the differential suite in
-//   tests/ enforces equality over 41.8 million assertions spanning uniform,
+//   tests/ enforces equality over 88.9 million assertions spanning uniform,
 //   regional, boundary-adversarial, pentagon, digit-walk and cell-vertex
 //   inputs, at every resolution from 0 to 15. That is strong evidence, not a
 //   proof over every representable double.
@@ -171,13 +173,12 @@ inline void up_ap7r(CoordIJK& c) {  // integer-exact _upAp7r (incl. its normaliz
 }
 
 inline void normalize(CoordIJK& c) {
-  if (c.i < 0) { c.j -= c.i; c.k -= c.i; c.i = 0; }
-  if (c.j < 0) { c.i -= c.j; c.k -= c.j; c.j = 0; }
-  if (c.k < 0) { c.i -= c.k; c.j -= c.k; c.k = 0; }
+  // Each axis correction is a common translation. Subtracting the original
+  // minimum once gives the same nonnegative triple with at least one zero.
   int m = c.i;
   if (c.j < m) m = c.j;
   if (c.k < m) m = c.k;
-  if (m > 0) { c.i -= m; c.j -= m; c.k -= m; }
+  c.i -= m; c.j -= m; c.k -= m;
 }
 
 inline void down_ap7(CoordIJK& c) {
@@ -196,14 +197,12 @@ inline void down_ap7r(CoordIJK& c) {
 }
 
 inline int unit_ijk_to_digit(const CoordIJK& in) {
-  constexpr CoordIJK kUnit[7] = {{0, 0, 0}, {0, 0, 1}, {0, 1, 0}, {0, 1, 1},
-                                 {1, 0, 0}, {1, 0, 1}, {1, 1, 0}};
   CoordIJK c = in;
   normalize(c);
-  for (int d = 0; d < 7; ++d) {
-    if (c.i == kUnit[d].i && c.j == kUnit[d].j && c.k == kUnit[d].k) return d;
-  }
-  return kInvalidDigit;
+  // H3's unit directions are precisely the binary digits I=4, J=2, K=1.
+  // Normalization excludes (1,1,1); retain the invalid non-unit sentinel.
+  if ((c.i | c.j | c.k) > 1) return kInvalidDigit;
+  return (c.i << 2) | (c.j << 1) | c.k;
 }
 
 // Digit rotations (coordijk.c _rotate60ccw/_rotate60cw):
@@ -230,6 +229,17 @@ inline std::uint64_t rotate60ccw_index(std::uint64_t h, int res) {
 }
 inline std::uint64_t rotate60cw_index(std::uint64_t h, int res) {
   for (int r = 1; r <= res; ++r) h = set_digit(h, r, rotate60cw(digit_at(h, r)));
+  return h;
+}
+inline std::uint64_t rotate60ccw_index_n(std::uint64_t h, int res, int count) {
+  if (count == 0) return h;
+  // Compose the rotations before walking the digits. Pentagon rotations have
+  // an extra deleted-axis correction and must keep their separate path.
+  constexpr int t[6][8] = {
+      {0, 1, 2, 3, 4, 5, 6, 7}, {0, 5, 3, 1, 6, 4, 2, 7},
+      {0, 4, 1, 5, 2, 6, 3, 7}, {0, 6, 5, 4, 3, 2, 1, 7},
+      {0, 2, 4, 6, 1, 3, 5, 7}, {0, 3, 6, 2, 5, 1, 4, 7}};
+  for (int r = 1; r <= res; ++r) h = set_digit(h, r, t[count][digit_at(h, r)]);
   return h;
 }
 inline std::uint64_t rotate_pent60ccw_index(std::uint64_t h, int res) {
@@ -632,21 +642,29 @@ class Grid {
     h = (h & ~(15ull << kModeOffset)) | (static_cast<std::uint64_t>(kCellMode) << kModeOffset);
     h = (h & ~(15ull << kResOffset)) | (static_cast<std::uint64_t>(Res) << kResOffset);
 
+    // Work in the translation-invariant IJ basis (i-k,j-k). Normalizing a
+    // parent and then its reconstructed center cannot change their IJ values,
+    // so neither normalization is needed inside the digit walk.
+    int i = ijk.i - ijk.k, j = ijk.j - ijk.k;
     for (int rr = Res - 1; rr >= 0; --rr) {
-      const CoordIJK last = ijk;
-      CoordIJK center;
+      const int last_i = i, last_j = j;
+      int center_i, center_j;
       if ((rr + 1) % 2 == 1) {  // res rr+1 is Class III
-        detail::up_ap7(ijk);
-        center = ijk;
-        detail::down_ap7(center);
+        i = detail::divround7(3 * last_i - last_j);
+        j = detail::divround7(last_i + 2 * last_j);
+        center_i = 2 * i + j;
+        center_j = 3 * j - i;
       } else {
-        detail::up_ap7r(ijk);
-        center = ijk;
-        detail::down_ap7r(center);
+        i = detail::divround7(2 * last_i + last_j);
+        j = detail::divround7(3 * last_j - last_i);
+        center_i = 3 * i - j;
+        center_j = i + 2 * j;
       }
-      CoordIJK diff{last.i - center.i, last.j - center.j, last.k - center.k};
+      const CoordIJK diff{last_i - center_i, last_j - center_j, 0};
       h = detail::set_digit(h, rr + 1, detail::unit_ijk_to_digit(diff));
     }
+    ijk = {i, j, 0};
+    detail::normalize(ijk);
 
     if (ijk.i > 2 || ijk.j > 2 || ijk.k > 2) return 0;  // out of range
 
@@ -661,7 +679,7 @@ class Grid {
       }
       for (int i = 0; i < bcr.ccwRot60; ++i) h = detail::rotate_pent60ccw_index(h, Res);
     } else {
-      for (int i = 0; i < bcr.ccwRot60; ++i) h = detail::rotate60ccw_index(h, Res);
+      h = detail::rotate60ccw_index_n(h, Res, bcr.ccwRot60);
     }
     return h;
   }
@@ -751,8 +769,9 @@ class Grid {
   // replacing the exact path's acos/tan/atan2/sincos chain. NOT bit-identical
   // to H3: last-ulp hex2d differences can flip points that sit within
   // float-noise of a cell boundary (measured divergence rate in the test
-  // suite; use only where a one-in-1e8 neighbor-cell assignment is
-  // acceptable). The integer digit walk is shared with the exact path.
+  // suite; use only where a rare neighbor-cell assignment on ordinary input
+  // is acceptable, with no promised rate for boundary-heavy input).
+  // The integer digit walk is shared with the exact path.
   static std::uint64_t cell_fast(double lat, double lng) {
     const double clat = cos(lat);
     const Vec3 p{cos(lng) * clat, sin(lng) * clat, sin(lat)};
