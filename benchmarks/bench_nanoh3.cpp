@@ -4,8 +4,7 @@
 //  - trace: a 15 m-step random walk (the matcher's regime), faster purely
 //    because the branch predictor and the warm face table exploit locality;
 //  - one face, scattered: separates "same face" locality from "consecutive
-//    point" locality. An explicit face cache was measured at ~0% against these
-//    rows and deleted, which is why no cached/uncached pairs remain.
+//    point" locality.
 // Points are precomputed; each op is exactly one conversion.
 #include <h3api.h>
 #include <nanobench.h>

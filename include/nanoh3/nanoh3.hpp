@@ -52,11 +52,8 @@
 //      argmin, the hex2d rounding branch tree and the digit walk all take the
 //      same paths repeatedly: branch mispredictions fall from 6.9% to 1.2% and
 //      the trace regime runs 113 ns/cell faster than scattered global points.
-//      An explicit single-face cache USED to sit here. It was removed: it hit
-//      99.9999% of the time and was still worth between -1.1% and +2.8%,
-//      because twenty unrollable distance computations vectorise into almost
-//      nothing. Removing it also removed the library's only mutable state, so
-//      every entry point below is now a pure function.
+//      The library keeps no state to help that along: every entry point below
+//      is a pure function of its arguments.
 //
 // BIT-IDENTITY CONTRACT: Grid<R>::cell(), ::center() and ::ring1() return
 // exactly what H3 v4.1.0's latLngToCell(), cellToLatLng() and gridDisk(k=1)
@@ -574,15 +571,9 @@ class Grid {
     const double clat = cos(lat);
     const Vec3 p{cos(lng) * clat, sin(lng) * clat, sin(lat)};
 
-    // Nearest of the 20 icosahedron face centres. This used to sit behind an
-    // opt-in single-face cache, on the theory that consecutive points in a
-    // track share a face and the search could be skipped. The theory was right
-    // and the optimisation was worthless: the cache hit 99.9999% of the time
-    // and bought between -1.1% and +2.8% depending on function and -O level.
-    // Twenty unrollable distance computations vectorise into almost nothing,
-    // and the branch predictor already exploits the locality the cache was
-    // built to exploit. Deleting it removed the library's only mutable state,
-    // which is why there is now nothing here to make thread-unsafe.
+    // Nearest of the 20 icosahedron face centres, searched every call: twenty
+    // unrollable distance computations vectorise into almost nothing, so a
+    // last-face cache measured at 0% and would be the library's only state.
     int face = 0;
     double sqd = 5.0;
     for (int f = 0; f < 20; ++f) {
